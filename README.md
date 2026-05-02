@@ -23,9 +23,10 @@ It is independent of any DEX or wallet abstractions. No global mutable state. No
 ```toml
 [dependencies]
 solana-token-toolkit = "0.1"
+spl-token-interface = "2" # for native_mint::ID in examples
 ```
 
-Compatible with the Solana SDK 3.x split crates. MSRV: Rust 1.81.
+Compatible with the Solana SDK 3.x split crates. MSRV: Rust 1.89.
 
 ## Usage
 
@@ -36,12 +37,14 @@ use solana_keypair::Keypair;
 use solana_pubkey::Pubkey;
 use solana_signer::Signer;
 use solana_token_toolkit::*;
-use spl_token::native_mint;
+use spl_token_interface::native_mint;
 
 # async fn example() -> Result<(), TokenError> {
 let rpc = RpcClient::new("https://api.devnet.solana.com".to_string());
 let user = Keypair::new();
-let usdc_mint = Pubkey::new_unique();
+let usdc_mint: Pubkey = "Gh9ZwEmdLJ8DscKNTkTqPbNwLNNBjuSzaG9Vp2KGtKJr"
+    .parse()
+    .expect("valid devnet USDC mint");
 
 let mints = vec![native_mint::ID, usdc_mint];
 let state = fetch_token_account_state(&rpc, user.pubkey(), &mints).await?;

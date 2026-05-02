@@ -2,7 +2,7 @@
 name = "solana-token-toolkit"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.81"
+rust-version = "1.89"
 license = "MIT OR Apache-2.0"
 description = "Token account workflow primitives for Solana applications"
 repository = "https://github.com/daiwanwei/solana-token-toolkit"
@@ -27,5 +27,3 @@ thiserror = "1"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt"] }
-litesvm = "0.7"
-solana-transaction = "3"

@@ -6,6 +6,7 @@ use solana_account::Account;
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_pubkey::Pubkey;
 use spl_associated_token_account_interface::address::get_associated_token_address_with_program_id;
+use spl_token_interface::native_mint;
 
 use crate::TokenError;
 
@@ -74,10 +75,37 @@ pub async fn fetch_token_account_state(
     let mint_account_opts = rpc.get_multiple_accounts(mints).await?;
     let mut mint_accounts = Vec::with_capacity(mints.len());
     for (i, opt) in mint_account_opts.into_iter().enumerate() {
-        mint_accounts.push(opt.ok_or(TokenError::MintNotFound(mints[i]))?);
+        match (mints[i] == native_mint::ID, opt) {
+            (_, Some(account)) => mint_accounts.push(account),
+            (true, None) => mint_accounts.push(native_mint_account()),
+            (false, None) => return Err(TokenError::MintNotFound(mints[i])),
+        }
     }
 
     assemble_token_account_state(rpc, owner, mints, &mint_accounts).await
+}
+
+fn native_mint_account() -> Account {
+    use solana_program_pack::Pack;
+    use spl_token::state::Mint;
+
+    let mint = Mint {
+        mint_authority: spl_token::solana_program::program_option::COption::None,
+        supply: 0,
+        decimals: native_mint::DECIMALS,
+        is_initialized: true,
+        freeze_authority: spl_token::solana_program::program_option::COption::None,
+    };
+    let mut data = vec![0u8; Mint::LEN];
+    Mint::pack(mint, &mut data).expect("native mint account serialization is infallible");
+
+    Account {
+        lamports: 0,
+        data,
+        owner: spl_token::ID,
+        executable: false,
+        rent_epoch: 0,
+    }
 }
 
 /// Assemble token account state from caller-provided mint accounts. Performs
@@ -208,5 +236,17 @@ mod tests {
         let state = fetch_token_account_state(&rpc, owner, &[]).await.unwrap();
         assert_eq!(state.owner, owner);
         assert!(state.mints.is_empty());
+    }
+
+    #[test]
+    fn native_mint_account_is_valid_classic_mint_owned_by_spl_token() {
+        use solana_program_pack::Pack;
+        use spl_token::state::Mint;
+
+        let account = native_mint_account();
+        assert_eq!(account.owner, spl_token::ID);
+        let mint = Mint::unpack(&account.data).unwrap();
+        assert!(mint.is_initialized);
+        assert_eq!(mint.decimals, native_mint::DECIMALS);
     }
 }
