@@ -241,3 +241,245 @@ fn invalid_intents_return_typed_errors() {
     let err = prepare_token_accounts(&state, &missing_intent, WrapSolStrategy::Ata, 0).unwrap_err();
     assert!(matches!(err, TokenError::MintNotFound(m) if m == missing));
 }
+
+// ---------------------------------------------------------------------------
+// LiteSVM-backed Token-2022 mint extension tests
+//
+// These tests deploy real Token-2022 mints with extensions (TransferFeeConfig,
+// TransferHook) via the on-chain Token-2022 program inside an in-memory bank.
+// They verify the toolkit's mint parsing logic against bytes produced by the
+// actual program — closes the v0.1 gap in §6.4 of the design spec.
+// ---------------------------------------------------------------------------
+
+mod token2022_litesvm {
+    use std::collections::HashMap;
+
+    use litesvm::LiteSVM;
+    use solana_account::Account as TkAccount;
+    use solana_keypair::Keypair;
+    use solana_pubkey::Pubkey;
+    use solana_signer::Signer;
+    use solana_token_toolkit::{
+        detect_transfer_hooks, get_token_mint_and_transfer_fee, reject_transfer_hook_mints,
+        MintAndAta, TokenAccountState, TokenError,
+    };
+    use solana_transaction::Transaction;
+    use spl_token_2022_interface::{
+        extension::{transfer_fee, transfer_hook, ExtensionType},
+        instruction as t22_ix,
+        state::Mint as Mint2022,
+    };
+
+    /// Spin up a LiteSVM with the Token-2022 program loaded and a funded payer.
+    fn setup() -> (LiteSVM, Keypair) {
+        let mut svm = LiteSVM::new();
+        let payer = Keypair::new();
+        svm.airdrop(&payer.pubkey(), 100_000_000_000).unwrap();
+        (svm, payer)
+    }
+
+    /// Build the create_account + initialize_transfer_fee_config + initialize_mint2
+    /// instruction sequence for a Token-2022 mint with the TransferFeeConfig extension.
+    /// Submit it as one transaction. Returns the mint pubkey.
+    fn create_token2022_mint_with_transfer_fee(
+        svm: &mut LiteSVM,
+        payer: &Keypair,
+        decimals: u8,
+        fee_bps: u16,
+        max_fee: u64,
+    ) -> Pubkey {
+        let mint_kp = Keypair::new();
+        let mint_size = ExtensionType::try_calculate_account_len::<Mint2022>(&[
+            ExtensionType::TransferFeeConfig,
+        ])
+        .unwrap();
+        let rent = svm.minimum_balance_for_rent_exemption(mint_size);
+        let token_program = spl_token_2022_interface::id();
+
+        let create_ix = solana_system_interface::instruction::create_account(
+            &payer.pubkey(),
+            &mint_kp.pubkey(),
+            rent,
+            mint_size as u64,
+            &token_program,
+        );
+        let init_fee_ix = transfer_fee::instruction::initialize_transfer_fee_config(
+            &token_program,
+            &mint_kp.pubkey(),
+            None,
+            None,
+            fee_bps,
+            max_fee,
+        )
+        .unwrap();
+        let init_mint_ix = t22_ix::initialize_mint2(
+            &token_program,
+            &mint_kp.pubkey(),
+            &payer.pubkey(),
+            None,
+            decimals,
+        )
+        .unwrap();
+
+        let blockhash = svm.latest_blockhash();
+        let tx = Transaction::new_signed_with_payer(
+            &[create_ix, init_fee_ix, init_mint_ix],
+            Some(&payer.pubkey()),
+            &[payer, &mint_kp],
+            blockhash,
+        );
+        svm.send_transaction(tx)
+            .expect("Token-2022 mint creation failed");
+        mint_kp.pubkey()
+    }
+
+    /// Same as above but with the TransferHook extension instead.
+    fn create_token2022_mint_with_transfer_hook(
+        svm: &mut LiteSVM,
+        payer: &Keypair,
+        decimals: u8,
+        hook_program: Pubkey,
+    ) -> Pubkey {
+        let mint_kp = Keypair::new();
+        let mint_size =
+            ExtensionType::try_calculate_account_len::<Mint2022>(&[ExtensionType::TransferHook])
+                .unwrap();
+        let rent = svm.minimum_balance_for_rent_exemption(mint_size);
+        let token_program = spl_token_2022_interface::id();
+
+        let create_ix = solana_system_interface::instruction::create_account(
+            &payer.pubkey(),
+            &mint_kp.pubkey(),
+            rent,
+            mint_size as u64,
+            &token_program,
+        );
+        let init_hook_ix = transfer_hook::instruction::initialize(
+            &token_program,
+            &mint_kp.pubkey(),
+            None,
+            Some(hook_program),
+        )
+        .unwrap();
+        let init_mint_ix = t22_ix::initialize_mint2(
+            &token_program,
+            &mint_kp.pubkey(),
+            &payer.pubkey(),
+            None,
+            decimals,
+        )
+        .unwrap();
+
+        let blockhash = svm.latest_blockhash();
+        let tx = Transaction::new_signed_with_payer(
+            &[create_ix, init_hook_ix, init_mint_ix],
+            Some(&payer.pubkey()),
+            &[payer, &mint_kp],
+            blockhash,
+        );
+        svm.send_transaction(tx)
+            .expect("Token-2022 hook mint creation failed");
+        mint_kp.pubkey()
+    }
+
+    fn fetch_mint_account(svm: &LiteSVM, mint: Pubkey) -> TkAccount {
+        let acc = svm.get_account(&mint).expect("mint account missing");
+        TkAccount {
+            lamports: acc.lamports,
+            data: acc.data,
+            owner: acc.owner,
+            executable: acc.executable,
+            rent_epoch: acc.rent_epoch,
+        }
+    }
+
+    fn state_with_one(owner: Pubkey, mint: Pubkey, account: TkAccount) -> TokenAccountState {
+        let mut mints = HashMap::new();
+        mints.insert(
+            mint,
+            MintAndAta {
+                mint_account: account,
+                ata_address: Pubkey::new_unique(),
+                ata_account: None,
+            },
+        );
+        TokenAccountState { owner, mints }
+    }
+
+    #[test]
+    fn token2022_transfer_fee_extension_parses_correctly() {
+        let (mut svm, payer) = setup();
+        let mint = create_token2022_mint_with_transfer_fee(&mut svm, &payer, 6, 250, 5_000_000);
+        let mint_account = fetch_mint_account(&svm, mint);
+
+        let parsed = get_token_mint_and_transfer_fee(mint, &mint_account, 100).unwrap();
+        assert_eq!(parsed.mint.decimals, 6);
+        let fee = parsed
+            .transfer_fee
+            .expect("TransferFee should be present on Token-2022 mint with extension");
+        assert_eq!(fee.fee_bps, 250);
+        assert_eq!(fee.max_fee, 5_000_000);
+    }
+
+    #[test]
+    fn detect_transfer_hooks_finds_hook_on_real_token2022_mint() {
+        let (mut svm, payer) = setup();
+        let hook_program = Pubkey::new_unique();
+        let mint = create_token2022_mint_with_transfer_hook(&mut svm, &payer, 6, hook_program);
+        let mint_account = fetch_mint_account(&svm, mint);
+
+        let state = state_with_one(Pubkey::new_unique(), mint, mint_account);
+        let hooks = detect_transfer_hooks(&state);
+        assert_eq!(hooks.len(), 1);
+        assert_eq!(hooks[&mint].hook_program_id, hook_program);
+    }
+
+    #[test]
+    fn reject_transfer_hook_mints_returns_lowest_pubkey_deterministically() {
+        let (mut svm, payer) = setup();
+        let hook_program = Pubkey::new_unique();
+
+        // Create two hook-bearing mints. We can't control the mint pubkeys (they're
+        // generated by Keypair::new()), so we sort and pick the lower one as
+        // expected_lowest.
+        let mint_a = create_token2022_mint_with_transfer_hook(&mut svm, &payer, 6, hook_program);
+        let mint_b = create_token2022_mint_with_transfer_hook(&mut svm, &payer, 6, hook_program);
+        let acc_a = fetch_mint_account(&svm, mint_a);
+        let acc_b = fetch_mint_account(&svm, mint_b);
+        let expected_lowest = if mint_a < mint_b { mint_a } else { mint_b };
+
+        let mut mints = HashMap::new();
+        mints.insert(
+            mint_a,
+            MintAndAta {
+                mint_account: acc_a,
+                ata_address: Pubkey::new_unique(),
+                ata_account: None,
+            },
+        );
+        mints.insert(
+            mint_b,
+            MintAndAta {
+                mint_account: acc_b,
+                ata_address: Pubkey::new_unique(),
+                ata_account: None,
+            },
+        );
+        let state = TokenAccountState {
+            owner: Pubkey::new_unique(),
+            mints,
+        };
+
+        // 5 runs — must always cite expected_lowest.
+        for _ in 0..5 {
+            let err = reject_transfer_hook_mints(&state).unwrap_err();
+            match err {
+                TokenError::TransferHookDetected { mint, program } => {
+                    assert_eq!(mint, expected_lowest);
+                    assert_eq!(program, hook_program);
+                }
+                _ => panic!("expected TransferHookDetected, got {err:?}"),
+            }
+        }
+    }
+}
