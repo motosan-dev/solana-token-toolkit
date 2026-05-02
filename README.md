@@ -23,10 +23,14 @@ It is independent of any DEX or wallet abstractions. No global mutable state. No
 ```toml
 [dependencies]
 solana-token-toolkit = "0.1"
+solana-client = "4.0.0-beta.7"
+solana-keypair = "3"
+solana-pubkey = "4"
+solana-signer = "3"
 spl-token-interface = "2" # for native_mint::ID in examples
 ```
 
-Compatible with the Solana SDK 3.x split crates. MSRV: Rust 1.89.
+Compatible with current Solana split crates used by the public API. MSRV: Rust 1.89.
 
 ## Usage
 
