@@ -1,0 +1,31 @@
+[package]
+name = "solana-token-toolkit"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.81"
+license = "MIT OR Apache-2.0"
+description = "Token account workflow primitives for Solana applications"
+repository = "https://github.com/daiwanwei/solana-token-toolkit"
+readme = "README.md"
+keywords = ["solana", "token", "spl-token-2022", "ata"]
+categories = ["cryptography::cryptocurrencies"]
+
+[dependencies]
+solana-client = "3"
+solana-pubkey = "4"
+solana-account = "3"
+solana-instruction = "3"
+solana-keypair = "3"
+solana-signer = "3"
+spl-token = "9"
+spl-token-2022-interface = "2"
+spl-associated-token-account-interface = "2"
+solana-system-interface = "2"
+solana-program-pack = "3"
+spl-token-interface = "2"
+thiserror = "1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt"] }
+litesvm = "0.7"
+solana-transaction = "3"
