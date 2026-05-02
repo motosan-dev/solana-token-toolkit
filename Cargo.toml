@@ -11,7 +11,7 @@ keywords = ["solana", "token", "spl-token-2022", "ata"]
 categories = ["cryptography::cryptocurrencies"]
 
 [dependencies]
-solana-client = "4.0.0-beta.7"
+solana-client = "3"
 solana-pubkey = "4"
 solana-account = "3"
 solana-instruction = "3"

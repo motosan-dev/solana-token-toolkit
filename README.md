@@ -23,14 +23,16 @@ It is independent of any DEX or wallet abstractions. No global mutable state. No
 ```toml
 [dependencies]
 solana-token-toolkit = "0.1"
-solana-client = "4.0.0-beta.7"
+solana-client = "3"
 solana-keypair = "3"
 solana-pubkey = "4"
 solana-signer = "3"
 spl-token-interface = "2" # for native_mint::ID in examples
 ```
 
-Compatible with current Solana split crates used by the public API. MSRV: Rust 1.89.
+Compatible with stable Solana SDK 3.x split crates. MSRV: Rust 1.89.
+
+> Note: `solana-account` intentionally remains on the Solana 3.x line because stable `solana-client` returns that account type. Solana 4 support should be a future minor release once the client stack is stable.
 
 ## Usage
 
@@ -77,6 +79,7 @@ let plan = prepare_token_accounts(&state, &intent, WrapSolStrategy::Ata, rent)?;
 - **Deterministic instruction order** — `prepare_token_accounts` sorts intents by mint pubkey.
 - **Typed errors** — no `anyhow` in public API.
 - **No Seed strategy** — protocol-specific wrapping is intentionally out of scope.
+- **Temporary wSOL when created by the toolkit** — `MintIntent::WithBalance` + `WrapSolStrategy::Ata` creates a wSOL ATA if missing, uses it for the main transaction, and includes a cleanup close instruction for that newly-created ATA. Existing user wSOL ATAs are never auto-closed.
 
 ## License
 
