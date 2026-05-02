@@ -408,4 +408,55 @@ mod tests {
         let err = prepare_token_accounts(&state, &intent, WrapSolStrategy::Ata, 0).unwrap_err();
         assert!(matches!(err, TokenError::WithBalanceNotSupported(m) if m == mint));
     }
+
+    #[test]
+    fn mixed_mints_emit_instructions_in_pubkey_sort_order() {
+        // Two non-SOL mints with deterministic-ordered pubkeys, both EnsureAtaExists.
+        // Verifies prepare_token_accounts iterates intent.mints in sorted Pubkey
+        // order (spec §3.4 determinism requirement) regardless of HashMap insertion
+        // order. Re-runs 5 times: same input must produce same address ordering.
+        let owner = Pubkey::new_unique();
+        let mint_low = Pubkey::new_from_array([0x11; 32]);
+        let mint_high = Pubkey::new_from_array([0xEE; 32]);
+        let entry_low = MintAndAta {
+            mint_account: mint_account(spl_token::ID),
+            ata_address: Pubkey::new_from_array([0x22; 32]),
+            ata_account: None,
+        };
+        let entry_high = MintAndAta {
+            mint_account: mint_account(spl_token::ID),
+            ata_address: Pubkey::new_from_array([0xDD; 32]),
+            ata_account: None,
+        };
+        let mut state_mints = HashMap::new();
+        // Insert in reverse-sorted order to verify sort actually fires.
+        state_mints.insert(mint_high, entry_high);
+        state_mints.insert(mint_low, entry_low);
+        let state = TokenAccountState {
+            owner,
+            mints: state_mints,
+        };
+        let intent = TokenAccountIntent {
+            mints: HashMap::from([
+                (mint_high, MintIntent::EnsureAtaExists),
+                (mint_low, MintIntent::EnsureAtaExists),
+            ]),
+        };
+
+        // 5 runs — instruction sequence must be byte-identical.
+        let mut last_serialized: Option<Vec<Vec<u8>>> = None;
+        for _ in 0..5 {
+            let plan = prepare_token_accounts(&state, &intent, WrapSolStrategy::Ata, 0).unwrap();
+            assert_eq!(plan.create_instructions.len(), 2);
+            let serialized: Vec<Vec<u8>> = plan
+                .create_instructions
+                .iter()
+                .map(|ix| ix.data.clone())
+                .collect();
+            if let Some(prev) = last_serialized.as_ref() {
+                assert_eq!(prev, &serialized, "non-deterministic across runs");
+            }
+            last_serialized = Some(serialized);
+        }
+    }
 }

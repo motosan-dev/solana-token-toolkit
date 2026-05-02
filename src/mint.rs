@@ -209,4 +209,14 @@ mod tests {
         let state = state_with_one_mint(Pubkey::new_unique(), make_classic_mint_account(9));
         assert!(detect_transfer_hooks(&state).is_empty());
     }
+
+    // Token-2022 mint extension construction is deferred to v0.1.1.
+    // The spl-token-2022-interface 2.x API for off-chain mint extension
+    // construction relies on crate-private `init_extension` /
+    // `init_account_type` methods (the public surface, `alloc_and_serialize`,
+    // requires a Solana program AccountInfo context). v0.1.1 will add
+    // LiteSVM-backed integration tests that create real Token-2022 mints
+    // via the on-chain program, which exercises both
+    // `get_token_mint_and_transfer_fee` and `detect_transfer_hooks` /
+    // `reject_transfer_hook_mints` end-to-end. See spec §6.4 amendment.
 }
