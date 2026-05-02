@@ -32,7 +32,7 @@ spl-token-interface = "2" # for native_mint::ID in examples
 
 Compatible with stable Solana SDK 3.x split crates. MSRV: Rust 1.89.
 
-> Note: `solana-account` intentionally remains on the Solana 3.x line because stable `solana-client` returns that account type. Solana 4 support should be a future minor release once the client stack is stable.
+> Stability policy for v0.1: this crate intentionally uses stable `solana-client = 3` and avoids Solana client 4 beta releases. `solana-account` remains on the Solana 3.x line because stable `solana-client` returns that account type. Solana 4 support should be a future minor release once the client stack is stable.
 
 ## Usage
 

@@ -11,17 +11,21 @@ keywords = ["solana", "token", "spl-token-2022", "ata"]
 categories = ["cryptography::cryptocurrencies"]
 
 [dependencies]
+# Stable Solana client line for v0.1. Solana client 4.x is still beta and
+# currently does not align cleanly with all public account types used here.
 solana-client = "3"
-solana-pubkey = "4"
 solana-account = "3"
 solana-instruction = "3"
 solana-keypair = "3"
+solana-program-pack = "3"
+solana-pubkey = "4"
 solana-signer = "3"
+# Latest stable system-interface line; `bincode` enables instruction builders
+# such as system_instruction::transfer and create_account.
+solana-system-interface = { version = "3", features = ["bincode"] }
+spl-associated-token-account-interface = "2"
 spl-token = "9"
 spl-token-2022-interface = "2"
-spl-associated-token-account-interface = "2"
-solana-system-interface = { version = "3", features = ["bincode"] }
-solana-program-pack = "3"
 spl-token-interface = "2"
 thiserror = "2"
 
