@@ -23,34 +23,39 @@ pub struct TransferFee {
     pub max_fee: u64,
 }
 
-/// A parsed mint plus its current transfer fee (if any).
+/// Parsed mint state with metadata fields useful for client code.
 #[derive(Debug, Clone)]
-pub struct TokenMintWithFee {
-    /// The unpacked mint base state.
+pub struct TokenMintMetadata {
+    /// Unpacked mint base state.
     pub mint: Mint,
-    /// `Some` if the mint has the TransferFee extension, `None` otherwise.
+    /// The token program that owns this mint.
+    pub program_id: Pubkey,
+    /// Transfer fee configuration if the mint has the TransferFeeConfig extension.
     pub transfer_fee: Option<TransferFee>,
+    /// Transfer hook program ID if the mint has the TransferHook extension with
+    /// a non-default program. None otherwise.
+    pub transfer_hook_program_id: Option<Pubkey>,
 }
 
-/// Parse a mint account and resolve its transfer fee for the given epoch.
+/// Parse a mint account and extract metadata.
 ///
 /// # Example
 ///
 /// ```no_run
-/// # use solana_token_toolkit::{get_token_mint_and_transfer_fee, TokenError};
+/// # use solana_token_toolkit::{get_token_mint_metadata, TokenError};
 /// # use solana_account::Account;
 /// # use solana_pubkey::Pubkey;
 /// # fn run(mint_account: Account) -> Result<(), TokenError> {
-/// let parsed = get_token_mint_and_transfer_fee(Pubkey::new_unique(), &mint_account, 100)?;
+/// let parsed = get_token_mint_metadata(Pubkey::new_unique(), &mint_account, 100)?;
 /// # let _ = parsed;
 /// # Ok(())
 /// # }
 /// ```
-pub fn get_token_mint_and_transfer_fee(
+pub fn get_token_mint_metadata(
     mint_pubkey: Pubkey,
     mint_account: &Account,
     epoch: u64,
-) -> Result<TokenMintWithFee, TokenError> {
+) -> Result<TokenMintMetadata, TokenError> {
     let unpacked = StateWithExtensions::<Mint>::unpack(&mint_account.data).map_err(|e| {
         TokenError::MintDecodeFailed {
             mint: mint_pubkey,
@@ -69,9 +74,16 @@ pub fn get_token_mint_and_transfer_fee(
             }
         });
 
-    Ok(TokenMintWithFee {
+    let transfer_hook_program_id = unpacked
+        .get_extension::<TransferHook>()
+        .ok()
+        .and_then(|hook| Option::<Pubkey>::from(hook.program_id));
+
+    Ok(TokenMintMetadata {
         mint: unpacked.base,
+        program_id: mint_account.owner,
         transfer_fee,
+        transfer_hook_program_id,
     })
 }
 
@@ -164,14 +176,13 @@ mod tests {
 
     #[test]
     fn classic_mint_decodes_with_no_transfer_fee() {
-        let parsed = get_token_mint_and_transfer_fee(
-            Pubkey::new_unique(),
-            &make_classic_mint_account(9),
-            100,
-        )
-        .unwrap();
+        let parsed =
+            get_token_mint_metadata(Pubkey::new_unique(), &make_classic_mint_account(9), 100)
+                .unwrap();
         assert_eq!(parsed.mint.decimals, 9);
+        assert_eq!(parsed.program_id, spl_token::ID);
         assert!(parsed.transfer_fee.is_none());
+        assert!(parsed.transfer_hook_program_id.is_none());
     }
 
     #[test]
@@ -184,7 +195,7 @@ mod tests {
             executable: false,
             rent_epoch: 0,
         };
-        let err = get_token_mint_and_transfer_fee(mint_pubkey, &account, 100).unwrap_err();
+        let err = get_token_mint_metadata(mint_pubkey, &account, 100).unwrap_err();
         assert!(matches!(err, TokenError::MintDecodeFailed { mint, .. } if mint == mint_pubkey));
     }
 
@@ -209,14 +220,4 @@ mod tests {
         let state = state_with_one_mint(Pubkey::new_unique(), make_classic_mint_account(9));
         assert!(detect_transfer_hooks(&state).is_empty());
     }
-
-    // Token-2022 mint extension construction is deferred to v0.1.1.
-    // The spl-token-2022-interface 2.x API for off-chain mint extension
-    // construction relies on crate-private `init_extension` /
-    // `init_account_type` methods (the public surface, `alloc_and_serialize`,
-    // requires a Solana program AccountInfo context). v0.1.1 will add
-    // LiteSVM-backed integration tests that create real Token-2022 mints
-    // via the on-chain program, which exercises both
-    // `get_token_mint_and_transfer_fee` and `detect_transfer_hooks` /
-    // `reject_transfer_hook_mints` end-to-end. See spec §6.4 amendment.
 }

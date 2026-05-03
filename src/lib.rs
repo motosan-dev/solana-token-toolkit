@@ -12,11 +12,12 @@ pub mod state;
 
 pub use error::TokenError;
 pub use mint::{
-    detect_transfer_hooks, get_token_mint_and_transfer_fee, reject_transfer_hook_mints,
-    TokenMintWithFee, TransferFee, TransferHookInfo,
+    detect_transfer_hooks, get_token_mint_metadata, reject_transfer_hook_mints, TokenMintMetadata,
+    TransferFee, TransferHookInfo,
 };
 pub use plan::{
-    prepare_token_accounts, MintIntent, TokenAccountIntent, TokenAccountPlan, WrapSolStrategy,
+    prepare_token_accounts, AtaCreateMode, MintIntent, TokenAccountIntent, TokenAccountPlan,
+    TokenAccountPlanConfig, WrapSolStrategy,
 };
 pub use state::{
     assemble_token_account_state, fetch_token_account_state, MintAndAta, TokenAccountState,

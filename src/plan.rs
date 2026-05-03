@@ -8,7 +8,9 @@ use solana_keypair::Keypair;
 use solana_pubkey::Pubkey;
 use solana_signer::Signer;
 use solana_system_interface::instruction as system_instruction;
-use spl_associated_token_account_interface::instruction::create_associated_token_account_idempotent;
+use spl_associated_token_account_interface::instruction::{
+    create_associated_token_account, create_associated_token_account_idempotent,
+};
 use spl_token_2022_interface::instruction::{close_account, initialize_account3, sync_native};
 use spl_token_interface::native_mint;
 
@@ -16,6 +18,22 @@ use crate::{
     state::{MintAndAta, TokenAccountState},
     TokenError,
 };
+
+/// Build the ATA create instruction matching the configured mode.
+fn build_create_ata_instruction(
+    mode: AtaCreateMode,
+    payer: &Pubkey,
+    owner: &Pubkey,
+    mint: &Pubkey,
+    token_program: &Pubkey,
+) -> Instruction {
+    match mode {
+        AtaCreateMode::Idempotent => {
+            create_associated_token_account_idempotent(payer, owner, mint, token_program)
+        }
+        AtaCreateMode::Legacy => create_associated_token_account(payer, owner, mint, token_program),
+    }
+}
 
 /// What the caller wants for each mint.
 #[derive(Debug, Clone)]
@@ -34,6 +52,12 @@ pub enum MintIntent {
         /// Required lamport balance in the wSOL account.
         lamports: u64,
     },
+    /// Non-SOL mints only: validate at plan time that the existing token
+    /// account already holds at least `amount`.
+    RequireTokenBalance {
+        /// Minimum required balance in raw token units.
+        amount: u64,
+    },
 }
 
 /// How to wrap native SOL when needed.
@@ -45,6 +69,44 @@ pub enum WrapSolStrategy {
     Keypair,
     /// Do not wrap. Incoherent with `MintIntent::WithBalance` for native SOL.
     None,
+}
+
+/// Whether `prepare_token_accounts` emits idempotent or non-idempotent ATA
+/// creation instructions.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum AtaCreateMode {
+    /// Idempotent ATA creation (default).
+    #[default]
+    Idempotent,
+    /// Non-idempotent ATA creation (legacy / byte-compat).
+    Legacy,
+}
+
+/// Configuration for `prepare_token_accounts`.
+///
+/// **No `Default` impl** — `rent_exempt_lamports` has no safe default. Use
+/// `with_rent(...)` to build with sensible defaults for other fields.
+#[derive(Debug, Clone)]
+pub struct TokenAccountPlanConfig {
+    /// How to handle native SOL wrapping.
+    pub wsol_strategy: WrapSolStrategy,
+    /// Whether ATA creation instructions are idempotent or legacy.
+    pub ata_create_mode: AtaCreateMode,
+    /// Rent-exempt lamports for a 165-byte SPL Token account.
+    pub rent_exempt_lamports: u64,
+}
+
+impl TokenAccountPlanConfig {
+    /// Construct a config with `WrapSolStrategy::Ata` and
+    /// `AtaCreateMode::Idempotent` defaults.
+    #[must_use]
+    pub fn with_rent(rent_exempt_lamports: u64) -> Self {
+        Self {
+            wsol_strategy: WrapSolStrategy::Ata,
+            ata_create_mode: AtaCreateMode::Idempotent,
+            rent_exempt_lamports,
+        }
+    }
 }
 
 /// Output of `prepare_token_accounts`.
@@ -71,14 +133,17 @@ pub struct TokenAccountPlan {
 /// let owner = Pubkey::new_unique();
 /// let state = TokenAccountState::empty(owner);
 /// let intent = TokenAccountIntent { mints: HashMap::new() };
-/// let plan = prepare_token_accounts(&state, &intent, WrapSolStrategy::Ata, 0).unwrap();
+/// let plan = prepare_token_accounts(
+///     &state,
+///     &intent,
+///     TokenAccountPlanConfig::with_rent(0),
+/// ).unwrap();
 /// assert!(plan.create_instructions.is_empty());
 /// ```
 pub fn prepare_token_accounts(
     state: &TokenAccountState,
     intent: &TokenAccountIntent,
-    wsol_strategy: WrapSolStrategy,
-    rent_exempt_lamports: u64,
+    config: TokenAccountPlanConfig,
 ) -> Result<TokenAccountPlan, TokenError> {
     let mut plan = TokenAccountPlan {
         create_instructions: Vec::new(),
@@ -102,15 +167,45 @@ pub fn prepare_token_accounts(
                 state.owner,
                 entry,
                 *lamports,
-                wsol_strategy,
-                rent_exempt_lamports,
+                config.wsol_strategy,
+                config.rent_exempt_lamports,
+                config.ata_create_mode,
                 &mut plan,
             )?,
             (true, MintIntent::EnsureAtaExists) | (false, MintIntent::EnsureAtaExists) => {
-                ensure_ata_exists(state.owner, *mint_pubkey, entry, &mut plan);
+                ensure_ata_exists(
+                    state.owner,
+                    *mint_pubkey,
+                    entry,
+                    config.ata_create_mode,
+                    &mut plan,
+                );
             }
             (false, MintIntent::WithBalance { .. }) => {
                 return Err(TokenError::WithBalanceNotSupported(*mint_pubkey));
+            }
+            (true, MintIntent::RequireTokenBalance { .. }) => {
+                return Err(TokenError::RequireBalanceForSolNotSupported(*mint_pubkey));
+            }
+            (false, MintIntent::RequireTokenBalance { amount }) => {
+                if entry.ata_account.is_none() {
+                    return Err(TokenError::InsufficientBalance {
+                        mint: *mint_pubkey,
+                        required: *amount,
+                        actual: 0,
+                    });
+                }
+
+                let actual = read_token_balance(entry.ata_address, &entry.ata_account)?;
+                if actual < *amount {
+                    return Err(TokenError::InsufficientBalance {
+                        mint: *mint_pubkey,
+                        required: *amount,
+                        actual,
+                    });
+                }
+                plan.token_account_addresses
+                    .insert(*mint_pubkey, entry.ata_address);
             }
         }
     }
@@ -122,16 +217,17 @@ fn ensure_ata_exists(
     owner: Pubkey,
     mint_pubkey: Pubkey,
     entry: &MintAndAta,
+    ata_create_mode: AtaCreateMode,
     plan: &mut TokenAccountPlan,
 ) {
     if entry.ata_account.is_none() {
-        plan.create_instructions
-            .push(create_associated_token_account_idempotent(
-                &owner,
-                &owner,
-                &mint_pubkey,
-                &entry.mint_account.owner,
-            ));
+        plan.create_instructions.push(build_create_ata_instruction(
+            ata_create_mode,
+            &owner,
+            &owner,
+            &mint_pubkey,
+            &entry.mint_account.owner,
+        ));
     }
     plan.token_account_addresses
         .insert(mint_pubkey, entry.ata_address);
@@ -143,6 +239,7 @@ fn handle_wrap_sol(
     required_lamports: u64,
     strategy: WrapSolStrategy,
     rent_exempt_lamports: u64,
+    ata_create_mode: AtaCreateMode,
     plan: &mut TokenAccountPlan,
 ) -> Result<(), TokenError> {
     use spl_token::ID as TOKEN_PROGRAM_ID;
@@ -153,13 +250,13 @@ fn handle_wrap_sol(
             let ata_did_not_exist = entry.ata_account.is_none();
 
             if ata_did_not_exist {
-                plan.create_instructions
-                    .push(create_associated_token_account_idempotent(
-                        &owner,
-                        &owner,
-                        &native_mint::ID,
-                        &TOKEN_PROGRAM_ID,
-                    ));
+                plan.create_instructions.push(build_create_ata_instruction(
+                    ata_create_mode,
+                    &owner,
+                    &owner,
+                    &native_mint::ID,
+                    &TOKEN_PROGRAM_ID,
+                ));
             }
 
             if existing_balance < required_lamports {
@@ -236,10 +333,12 @@ fn read_token_balance(
     match account {
         None => Ok(0),
         Some(acc) => {
-            use solana_program_pack::Pack;
-            use spl_token::state::Account as SplTokenAccount;
-            SplTokenAccount::unpack(&acc.data)
-                .map(|a| a.amount)
+            use spl_token_2022_interface::{
+                extension::StateWithExtensions, state::Account as TokenAccount,
+            };
+
+            StateWithExtensions::<TokenAccount>::unpack(&acc.data)
+                .map(|a| a.base.amount)
                 .map_err(|e| TokenError::TokenAccountDecodeFailed {
                     token_account: token_account_pubkey,
                     reason: format!("token account unpack: {e}"),
@@ -320,7 +419,13 @@ mod tests {
             ata_account: None,
         };
         let mut plan = empty_plan();
-        ensure_ata_exists(owner, mint_pubkey, &entry, &mut plan);
+        ensure_ata_exists(
+            owner,
+            mint_pubkey,
+            &entry,
+            AtaCreateMode::Idempotent,
+            &mut plan,
+        );
         assert_eq!(plan.create_instructions.len(), 1);
         assert_eq!(
             plan.token_account_addresses[&mint_pubkey],
@@ -348,6 +453,7 @@ mod tests {
             1_500_000_000,
             WrapSolStrategy::Ata,
             2_039_280,
+            AtaCreateMode::Idempotent,
             &mut plan,
         )
         .unwrap();
@@ -366,6 +472,7 @@ mod tests {
             1_500_000_000,
             WrapSolStrategy::Keypair,
             2_039_280,
+            AtaCreateMode::Idempotent,
             &mut plan,
         )
         .unwrap();
@@ -383,8 +490,16 @@ mod tests {
         let owner = Pubkey::new_unique();
         let entry = wsol_entry(None);
         let mut plan = empty_plan();
-        let err =
-            handle_wrap_sol(owner, &entry, 1, WrapSolStrategy::None, 0, &mut plan).unwrap_err();
+        let err = handle_wrap_sol(
+            owner,
+            &entry,
+            1,
+            WrapSolStrategy::None,
+            0,
+            AtaCreateMode::Idempotent,
+            &mut plan,
+        )
+        .unwrap_err();
         assert!(matches!(err, TokenError::IncoherentWrapStrategy));
     }
 
@@ -405,16 +520,13 @@ mod tests {
         let intent = TokenAccountIntent {
             mints: HashMap::from([(mint, MintIntent::WithBalance { lamports: 100 })]),
         };
-        let err = prepare_token_accounts(&state, &intent, WrapSolStrategy::Ata, 0).unwrap_err();
+        let err = prepare_token_accounts(&state, &intent, TokenAccountPlanConfig::with_rent(0))
+            .unwrap_err();
         assert!(matches!(err, TokenError::WithBalanceNotSupported(m) if m == mint));
     }
 
     #[test]
     fn mixed_mints_emit_instructions_in_pubkey_sort_order() {
-        // Two non-SOL mints with deterministic-ordered pubkeys, both EnsureAtaExists.
-        // Verifies prepare_token_accounts iterates intent.mints in sorted Pubkey
-        // order (spec §3.4 determinism requirement) regardless of HashMap insertion
-        // order. Re-runs 5 times: same input must produce same address ordering.
         let owner = Pubkey::new_unique();
         let mint_low = Pubkey::new_from_array([0x11; 32]);
         let mint_high = Pubkey::new_from_array([0xEE; 32]);
@@ -429,7 +541,6 @@ mod tests {
             ata_account: None,
         };
         let mut state_mints = HashMap::new();
-        // Insert in reverse-sorted order to verify sort actually fires.
         state_mints.insert(mint_high, entry_high);
         state_mints.insert(mint_low, entry_low);
         let state = TokenAccountState {
@@ -443,10 +554,11 @@ mod tests {
             ]),
         };
 
-        // 5 runs — instruction sequence must be byte-identical.
         let mut last_serialized: Option<Vec<Vec<u8>>> = None;
         for _ in 0..5 {
-            let plan = prepare_token_accounts(&state, &intent, WrapSolStrategy::Ata, 0).unwrap();
+            let plan =
+                prepare_token_accounts(&state, &intent, TokenAccountPlanConfig::with_rent(0))
+                    .unwrap();
             assert_eq!(plan.create_instructions.len(), 2);
             let serialized: Vec<Vec<u8>> = plan
                 .create_instructions

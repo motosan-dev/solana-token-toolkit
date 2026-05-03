@@ -64,4 +64,22 @@ pub enum TokenError {
     /// An `spl-token-*` instruction builder returned an error.
     #[error("instruction build failed: {0}")]
     InstructionBuild(String),
+
+    /// `MintIntent::RequireTokenBalance` failed because actual balance is
+    /// below required. `actual` is `0` when the ATA does not exist on chain.
+    #[error("token balance insufficient on mint {mint}: required {required}, actual {actual}")]
+    InsufficientBalance {
+        /// The mint whose balance check failed.
+        mint: Pubkey,
+        /// The amount the caller required.
+        required: u64,
+        /// The actual balance found in `state.mints[mint].ata_account` (or 0 if missing).
+        actual: u64,
+    },
+
+    /// `MintIntent::RequireTokenBalance` was used with `native_mint::ID`
+    /// (SOL/wSOL). For SOL balance preparation, use `MintIntent::WithBalance`
+    /// (which transfers SOL into wSOL).
+    #[error("RequireTokenBalance intent on SOL/wSOL mint {0} is not supported (use WithBalance)")]
+    RequireBalanceForSolNotSupported(Pubkey),
 }

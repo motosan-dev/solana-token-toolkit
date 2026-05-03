@@ -1,6 +1,6 @@
 [package]
 name = "solana-token-toolkit"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.89"
 license = "MIT OR Apache-2.0"
@@ -11,7 +11,7 @@ keywords = ["solana", "token", "spl-token-2022", "ata"]
 categories = ["cryptography::cryptocurrencies"]
 
 [dependencies]
-# Stable Solana client line for v0.1. Solana client 4.x is still beta and
+# Stable Solana client line. Solana client 4.x is still beta and
 # currently does not align cleanly with all public account types used here.
 solana-client = "3"
 solana-account = "3"

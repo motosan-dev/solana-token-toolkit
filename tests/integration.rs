@@ -10,8 +10,9 @@ use solana_program_pack::Pack;
 use solana_pubkey::Pubkey;
 use solana_signer::Signer;
 use solana_token_toolkit::{
-    detect_transfer_hooks, get_token_mint_and_transfer_fee, prepare_token_accounts, MintAndAta,
-    MintIntent, TokenAccountIntent, TokenAccountState, TokenError, WrapSolStrategy,
+    detect_transfer_hooks, get_token_mint_metadata, prepare_token_accounts, AtaCreateMode,
+    MintAndAta, MintIntent, TokenAccountIntent, TokenAccountPlanConfig, TokenAccountState,
+    TokenError, WrapSolStrategy,
 };
 use spl_token::state::{Account as SplTokenAccount, AccountState, Mint as SplMint};
 use spl_token_interface::native_mint;
@@ -36,6 +37,10 @@ fn mint_account(token_program: Pubkey, decimals: u8) -> Account {
 }
 
 fn token_account_with_amount(amount: u64) -> Account {
+    token_account_with_amount_and_owner(amount, spl_token::ID)
+}
+
+fn token_account_with_amount_and_owner(amount: u64, owner: Pubkey) -> Account {
     let token_acc = SplTokenAccount {
         mint: Pubkey::new_unique(),
         owner: Pubkey::new_unique(),
@@ -51,7 +56,7 @@ fn token_account_with_amount(amount: u64) -> Account {
     Account {
         lamports: 2_039_280,
         data,
-        owner: spl_token::ID,
+        owner,
         executable: false,
         rent_epoch: 0,
     }
@@ -76,9 +81,11 @@ fn classic_mint_parse_and_hook_detection_are_empty() {
         ata_account: None,
     };
 
-    let parsed = get_token_mint_and_transfer_fee(mint, &entry.mint_account, 0).unwrap();
+    let parsed = get_token_mint_metadata(mint, &entry.mint_account, 0).unwrap();
     assert_eq!(parsed.mint.decimals, 6);
+    assert_eq!(parsed.program_id, spl_token::ID);
     assert!(parsed.transfer_fee.is_none());
+    assert!(parsed.transfer_hook_program_id.is_none());
 
     let state = state_with_entries(Pubkey::new_unique(), [(mint, entry)]);
     assert!(detect_transfer_hooks(&state).is_empty());
@@ -104,7 +111,8 @@ fn non_sol_ensure_ata_exists_builds_create_instruction_and_address() {
         mints: HashMap::from([(mint, MintIntent::EnsureAtaExists)]),
     };
 
-    let plan = prepare_token_accounts(&state, &intent, WrapSolStrategy::Ata, 0).unwrap();
+    let plan =
+        prepare_token_accounts(&state, &intent, TokenAccountPlanConfig::with_rent(0)).unwrap();
 
     assert_eq!(plan.create_instructions.len(), 1);
     assert!(plan.cleanup_instructions.is_empty());
@@ -136,7 +144,12 @@ fn wsol_ata_missing_with_balance_creates_wrap_and_cleanup_flow() {
         )]),
     };
 
-    let plan = prepare_token_accounts(&state, &intent, WrapSolStrategy::Ata, 2_039_280).unwrap();
+    let plan = prepare_token_accounts(
+        &state,
+        &intent,
+        TokenAccountPlanConfig::with_rent(2_039_280),
+    )
+    .unwrap();
 
     assert_eq!(plan.create_instructions.len(), 3);
     assert_eq!(plan.cleanup_instructions.len(), 1);
@@ -168,7 +181,12 @@ fn wsol_existing_ata_only_tops_up_delta_and_does_not_cleanup() {
         )]),
     };
 
-    let plan = prepare_token_accounts(&state, &intent, WrapSolStrategy::Ata, 2_039_280).unwrap();
+    let plan = prepare_token_accounts(
+        &state,
+        &intent,
+        TokenAccountPlanConfig::with_rent(2_039_280),
+    )
+    .unwrap();
 
     assert_eq!(plan.create_instructions.len(), 2);
     assert!(plan.cleanup_instructions.is_empty());
@@ -199,8 +217,15 @@ fn keypair_strategy_returns_ephemeral_signer_and_account_address() {
         )]),
     };
 
-    let plan =
-        prepare_token_accounts(&state, &intent, WrapSolStrategy::Keypair, 2_039_280).unwrap();
+    let plan = prepare_token_accounts(
+        &state,
+        &intent,
+        TokenAccountPlanConfig {
+            wsol_strategy: WrapSolStrategy::Keypair,
+            ..TokenAccountPlanConfig::with_rent(2_039_280)
+        },
+    )
+    .unwrap();
 
     assert_eq!(plan.create_instructions.len(), 2);
     assert_eq!(plan.cleanup_instructions.len(), 1);
@@ -230,16 +255,282 @@ fn invalid_intents_return_typed_errors() {
     let non_sol_with_balance = TokenAccountIntent {
         mints: HashMap::from([(mint, MintIntent::WithBalance { lamports: 1 })]),
     };
-    let err =
-        prepare_token_accounts(&state, &non_sol_with_balance, WrapSolStrategy::Ata, 0).unwrap_err();
+    let err = prepare_token_accounts(
+        &state,
+        &non_sol_with_balance,
+        TokenAccountPlanConfig::with_rent(0),
+    )
+    .unwrap_err();
     assert!(matches!(err, TokenError::WithBalanceNotSupported(m) if m == mint));
 
     let missing = Pubkey::new_unique();
     let missing_intent = TokenAccountIntent {
         mints: HashMap::from([(missing, MintIntent::EnsureAtaExists)]),
     };
-    let err = prepare_token_accounts(&state, &missing_intent, WrapSolStrategy::Ata, 0).unwrap_err();
+    let err = prepare_token_accounts(
+        &state,
+        &missing_intent,
+        TokenAccountPlanConfig::with_rent(0),
+    )
+    .unwrap_err();
     assert!(matches!(err, TokenError::MintNotFound(m) if m == missing));
+}
+
+#[test]
+fn prepare_with_ata_legacy_emits_non_idempotent_create() {
+    let owner = Pubkey::new_unique();
+    let mint = Pubkey::new_unique();
+    let ata = Pubkey::new_unique();
+    let state = state_with_entries(
+        owner,
+        [(
+            mint,
+            MintAndAta {
+                mint_account: mint_account(spl_token::ID, 9),
+                ata_address: ata,
+                ata_account: None,
+            },
+        )],
+    );
+    let intent = TokenAccountIntent {
+        mints: HashMap::from([(mint, MintIntent::EnsureAtaExists)]),
+    };
+
+    let plan = prepare_token_accounts(
+        &state,
+        &intent,
+        TokenAccountPlanConfig {
+            ata_create_mode: AtaCreateMode::Legacy,
+            ..TokenAccountPlanConfig::with_rent(0)
+        },
+    )
+    .unwrap();
+
+    assert_eq!(plan.create_instructions.len(), 1);
+    assert_eq!(plan.create_instructions[0].data, vec![0u8]);
+}
+
+#[test]
+fn prepare_with_ata_idempotent_default_emits_idempotent_create() {
+    let owner = Pubkey::new_unique();
+    let mint = Pubkey::new_unique();
+    let ata = Pubkey::new_unique();
+    let state = state_with_entries(
+        owner,
+        [(
+            mint,
+            MintAndAta {
+                mint_account: mint_account(spl_token::ID, 9),
+                ata_address: ata,
+                ata_account: None,
+            },
+        )],
+    );
+    let intent = TokenAccountIntent {
+        mints: HashMap::from([(mint, MintIntent::EnsureAtaExists)]),
+    };
+
+    let plan =
+        prepare_token_accounts(&state, &intent, TokenAccountPlanConfig::with_rent(0)).unwrap();
+
+    assert_eq!(plan.create_instructions.len(), 1);
+    assert_eq!(plan.create_instructions[0].data, vec![1u8]);
+}
+
+#[test]
+fn mint_intent_require_token_balance_passes_when_sufficient() {
+    let owner = Pubkey::new_unique();
+    let mint = Pubkey::new_unique();
+    let ata = Pubkey::new_unique();
+    let state = state_with_entries(
+        owner,
+        [(
+            mint,
+            MintAndAta {
+                mint_account: mint_account(spl_token::ID, 9),
+                ata_address: ata,
+                ata_account: Some(token_account_with_amount(200)),
+            },
+        )],
+    );
+    let intent = TokenAccountIntent {
+        mints: HashMap::from([(mint, MintIntent::RequireTokenBalance { amount: 100 })]),
+    };
+
+    let plan =
+        prepare_token_accounts(&state, &intent, TokenAccountPlanConfig::with_rent(0)).unwrap();
+
+    assert!(plan.create_instructions.is_empty());
+    assert_eq!(plan.token_account_addresses.get(&mint), Some(&ata));
+}
+
+#[test]
+fn mint_intent_require_token_balance_passes_for_token2022_owned_base_account() {
+    let owner = Pubkey::new_unique();
+    let mint = Pubkey::new_unique();
+    let ata = Pubkey::new_unique();
+    let state = state_with_entries(
+        owner,
+        [(
+            mint,
+            MintAndAta {
+                mint_account: mint_account(spl_token_2022_interface::id(), 9),
+                ata_address: ata,
+                ata_account: Some(token_account_with_amount_and_owner(
+                    200,
+                    spl_token_2022_interface::id(),
+                )),
+            },
+        )],
+    );
+    let intent = TokenAccountIntent {
+        mints: HashMap::from([(mint, MintIntent::RequireTokenBalance { amount: 100 })]),
+    };
+
+    let plan =
+        prepare_token_accounts(&state, &intent, TokenAccountPlanConfig::with_rent(0)).unwrap();
+
+    assert!(plan.create_instructions.is_empty());
+    assert_eq!(plan.token_account_addresses.get(&mint), Some(&ata));
+}
+
+#[test]
+fn mint_intent_require_token_balance_fails_when_insufficient() {
+    let owner = Pubkey::new_unique();
+    let mint = Pubkey::new_unique();
+    let state = state_with_entries(
+        owner,
+        [(
+            mint,
+            MintAndAta {
+                mint_account: mint_account(spl_token::ID, 9),
+                ata_address: Pubkey::new_unique(),
+                ata_account: Some(token_account_with_amount(50)),
+            },
+        )],
+    );
+    let intent = TokenAccountIntent {
+        mints: HashMap::from([(mint, MintIntent::RequireTokenBalance { amount: 100 })]),
+    };
+
+    let err =
+        prepare_token_accounts(&state, &intent, TokenAccountPlanConfig::with_rent(0)).unwrap_err();
+
+    match err {
+        TokenError::InsufficientBalance {
+            mint: m,
+            required,
+            actual,
+        } => {
+            assert_eq!(m, mint);
+            assert_eq!(required, 100);
+            assert_eq!(actual, 50);
+        }
+        _ => panic!("expected InsufficientBalance, got {err:?}"),
+    }
+}
+
+#[test]
+fn mint_intent_require_token_balance_fails_when_account_missing() {
+    let owner = Pubkey::new_unique();
+    let mint = Pubkey::new_unique();
+    let state = state_with_entries(
+        owner,
+        [(
+            mint,
+            MintAndAta {
+                mint_account: mint_account(spl_token::ID, 9),
+                ata_address: Pubkey::new_unique(),
+                ata_account: None,
+            },
+        )],
+    );
+    let intent = TokenAccountIntent {
+        mints: HashMap::from([(mint, MintIntent::RequireTokenBalance { amount: 100 })]),
+    };
+
+    let err =
+        prepare_token_accounts(&state, &intent, TokenAccountPlanConfig::with_rent(0)).unwrap_err();
+
+    match err {
+        TokenError::InsufficientBalance {
+            mint: m,
+            required,
+            actual,
+        } => {
+            assert_eq!(m, mint);
+            assert_eq!(required, 100);
+            assert_eq!(actual, 0);
+        }
+        _ => panic!("expected InsufficientBalance, got {err:?}"),
+    }
+}
+
+#[test]
+fn mint_intent_require_token_balance_fails_when_account_missing_even_for_zero_amount() {
+    let owner = Pubkey::new_unique();
+    let mint = Pubkey::new_unique();
+    let state = state_with_entries(
+        owner,
+        [(
+            mint,
+            MintAndAta {
+                mint_account: mint_account(spl_token::ID, 9),
+                ata_address: Pubkey::new_unique(),
+                ata_account: None,
+            },
+        )],
+    );
+    let intent = TokenAccountIntent {
+        mints: HashMap::from([(mint, MintIntent::RequireTokenBalance { amount: 0 })]),
+    };
+
+    let err =
+        prepare_token_accounts(&state, &intent, TokenAccountPlanConfig::with_rent(0)).unwrap_err();
+
+    match err {
+        TokenError::InsufficientBalance {
+            mint: m,
+            required,
+            actual,
+        } => {
+            assert_eq!(m, mint);
+            assert_eq!(required, 0);
+            assert_eq!(actual, 0);
+        }
+        _ => panic!("expected InsufficientBalance, got {err:?}"),
+    }
+}
+
+#[test]
+fn mint_intent_require_token_balance_for_native_sol_returns_require_balance_for_sol_not_supported()
+{
+    let owner = Pubkey::new_unique();
+    let state = state_with_entries(
+        owner,
+        [(
+            native_mint::ID,
+            MintAndAta {
+                mint_account: mint_account(spl_token::ID, native_mint::DECIMALS),
+                ata_address: Pubkey::new_unique(),
+                ata_account: None,
+            },
+        )],
+    );
+    let intent = TokenAccountIntent {
+        mints: HashMap::from([(
+            native_mint::ID,
+            MintIntent::RequireTokenBalance { amount: 1 },
+        )]),
+    };
+
+    let err =
+        prepare_token_accounts(&state, &intent, TokenAccountPlanConfig::with_rent(0)).unwrap_err();
+
+    assert!(matches!(
+        err,
+        TokenError::RequireBalanceForSolNotSupported(m) if m == native_mint::ID
+    ));
 }
 
 // ---------------------------------------------------------------------------
@@ -261,8 +552,8 @@ mod token2022_litesvm {
     use solana_pubkey::Pubkey;
     use solana_signer::Signer;
     use solana_token_toolkit::{
-        detect_transfer_hooks, get_token_mint_and_transfer_fee, reject_transfer_hook_mints,
-        MintAndAta, TokenAccountState, TokenError,
+        detect_transfer_hooks, get_token_mint_metadata, reject_transfer_hook_mints, MintAndAta,
+        TokenAccountState, TokenError,
     };
 
     /// Spin up a LiteSVM with the Token-2022 program loaded and a funded payer.
@@ -307,13 +598,34 @@ mod token2022_litesvm {
             .unwrap();
         let mint_account = fetch_mint_account(&svm, mint);
 
-        let parsed = get_token_mint_and_transfer_fee(mint, &mint_account, 100).unwrap();
+        let parsed = get_token_mint_metadata(mint, &mint_account, 100).unwrap();
         assert_eq!(parsed.mint.decimals, 6);
+        assert_eq!(parsed.program_id, spl_token_2022_interface::id());
         let fee = parsed
             .transfer_fee
             .expect("TransferFee should be present on Token-2022 mint with extension");
         assert_eq!(fee.fee_bps, 250);
         assert_eq!(fee.max_fee, 5_000_000);
+        assert!(parsed.transfer_hook_program_id.is_none());
+    }
+
+    #[test]
+    fn token_mint_metadata_includes_program_id_and_hook() {
+        let (mut svm, payer) = setup();
+        let hook_program = Pubkey::new_unique();
+        let mint = CreateMintWithExtensions::new(&mut svm, &payer)
+            .decimals(6)
+            .with_transfer_hook(hook_program)
+            .send()
+            .unwrap();
+        let mint_account = fetch_mint_account(&svm, mint);
+
+        let parsed = get_token_mint_metadata(mint, &mint_account, 100).unwrap();
+
+        assert_eq!(parsed.mint.decimals, 6);
+        assert_eq!(parsed.program_id, spl_token_2022_interface::id());
+        assert!(parsed.transfer_fee.is_none());
+        assert_eq!(parsed.transfer_hook_program_id, Some(hook_program));
     }
 
     #[test]
