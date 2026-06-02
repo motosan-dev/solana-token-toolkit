@@ -6,7 +6,10 @@ Token account workflow primitives for Solana applications.
 [![Docs](https://docs.rs/solana-token-toolkit/badge.svg)](https://docs.rs/solana-token-toolkit)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 
-> **Status:** v0.2. API is stable within minor versions.
+> **Status:** v0.3. API is stable within minor versions. The on-chain state
+> readers (`fetch_token_account_state`, `assemble_token_account_state`) require
+> the default `rpc` feature; planning and mint metadata are I/O-free and build
+> with `default-features = false`.
 
 ## What this is
 
@@ -22,7 +25,11 @@ It is independent of any DEX or wallet abstractions. No global mutable state. No
 
 ```toml
 [dependencies]
-solana-token-toolkit = "0.2"
+solana-token-toolkit = "0.3"
+# solana-client is pulled in by the default `rpc` feature. For a pure, I/O-free
+# build (planning + mint metadata + state types only), use:
+#   solana-token-toolkit = { version = "0.3", default-features = false }
+# and you can then drop the solana-client line below.
 solana-client = "3"
 solana-keypair = "3"
 solana-pubkey = "4"

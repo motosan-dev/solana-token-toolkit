@@ -3,11 +3,15 @@
 use std::collections::HashMap;
 
 use solana_account::Account;
+#[cfg(feature = "rpc")]
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_pubkey::Pubkey;
+#[cfg(feature = "rpc")]
 use spl_associated_token_account_interface::address::get_associated_token_address_with_program_id;
+#[cfg(feature = "rpc")]
 use spl_token_interface::native_mint;
 
+#[cfg(feature = "rpc")]
 use crate::TokenError;
 
 /// On-chain state for an owner's token accounts across a set of mints.
@@ -63,6 +67,7 @@ pub struct MintAndAta {
 /// # Ok(())
 /// # }
 /// ```
+#[cfg(feature = "rpc")]
 pub async fn fetch_token_account_state(
     rpc: &RpcClient,
     owner: Pubkey,
@@ -85,6 +90,7 @@ pub async fn fetch_token_account_state(
     assemble_token_account_state(rpc, owner, mints, &mint_accounts).await
 }
 
+#[cfg(feature = "rpc")]
 fn native_mint_account() -> Account {
     use solana_program_pack::Pack;
     use spl_token::state::Mint;
@@ -132,6 +138,7 @@ fn native_mint_account() -> Account {
 /// # Ok(())
 /// # }
 /// ```
+#[cfg(feature = "rpc")]
 pub async fn assemble_token_account_state(
     rpc: &RpcClient,
     owner: Pubkey,
@@ -183,6 +190,7 @@ pub async fn assemble_token_account_state(
 mod tests {
     use super::*;
 
+    #[cfg(feature = "rpc")]
     #[tokio::test]
     async fn empty_mints_returns_empty_state_no_rpc() {
         let rpc = RpcClient::new_mock("succeeds".to_string());
@@ -194,6 +202,7 @@ mod tests {
         assert!(state.mints.is_empty());
     }
 
+    #[cfg(feature = "rpc")]
     #[tokio::test]
     async fn length_mismatch_returns_error_no_rpc() {
         let rpc = RpcClient::new_mock("succeeds".to_string());
@@ -229,6 +238,7 @@ mod tests {
         assert!(state.mints.is_empty());
     }
 
+    #[cfg(feature = "rpc")]
     #[tokio::test]
     async fn fetch_empty_mints_returns_empty_state_no_rpc() {
         let rpc = RpcClient::new_mock("succeeds".to_string());
@@ -238,6 +248,7 @@ mod tests {
         assert!(state.mints.is_empty());
     }
 
+    #[cfg(feature = "rpc")]
     #[test]
     fn native_mint_account_is_valid_classic_mint_owned_by_spl_token() {
         use solana_program_pack::Pack;

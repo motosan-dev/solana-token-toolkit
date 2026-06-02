@@ -19,6 +19,6 @@ pub use plan::{
     prepare_token_accounts, AtaCreateMode, MintIntent, TokenAccountIntent, TokenAccountPlan,
     TokenAccountPlanConfig, WrapSolStrategy,
 };
-pub use state::{
-    assemble_token_account_state, fetch_token_account_state, MintAndAta, TokenAccountState,
-};
+#[cfg(feature = "rpc")]
+pub use state::{assemble_token_account_state, fetch_token_account_state};
+pub use state::{MintAndAta, TokenAccountState};

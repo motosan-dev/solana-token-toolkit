@@ -24,6 +24,19 @@ jobs:
           components: clippy
       - run: cargo clippy --all-targets -- -D warnings
 
+  # Guards the pure / I/O-free build (default-features = false drops solana-client).
+  # The default jobs above only exercise the `rpc` feature, so without this a
+  # regression that breaks the no-rpc build would pass CI undetected.
+  no-default-features:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - run: cargo clippy --all-targets --no-default-features -- -D warnings
+      - run: cargo test --no-default-features
+
   test:
     strategy:
       matrix:
