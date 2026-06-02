@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.3.0 — 2026-06-02
+
+Additive, backward-compatible release.
+
+### Added
+
+- `rpc` cargo feature (**on by default**) gating the `solana-client` dependency.
+  Consumers that only need the pure surface — planning (`prepare_token_accounts`,
+  `WrapSolStrategy`, …), mint metadata, and the `TokenAccountState` / `MintAndAta`
+  *types* — can now depend with `default-features = false` to drop `solana-client`
+  (and the QUIC/tokio stack) entirely for an I/O-free build.
+
+### Notes
+
+- Default builds are unchanged: `fetch_token_account_state`,
+  `assemble_token_account_state`, and `TokenError::Rpc` remain available under the
+  default `rpc` feature. Only `default-features = false` consumers see them gated out.
+
 ## v0.2.0 — 2026-05-03
 
 Breaking release addressing architectural gaps surfaced after v0.1.1.

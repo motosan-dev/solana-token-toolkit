@@ -22,7 +22,11 @@ It is independent of any DEX or wallet abstractions. No global mutable state. No
 
 ```toml
 [dependencies]
-solana-token-toolkit = "0.2"
+solana-token-toolkit = "0.3"
+# solana-client is pulled in by the default `rpc` feature. For a pure, I/O-free
+# build (planning + mint metadata + state types only), use:
+#   solana-token-toolkit = { version = "0.3", default-features = false }
+# and you can then drop the solana-client line below.
 solana-client = "3"
 solana-keypair = "3"
 solana-pubkey = "4"

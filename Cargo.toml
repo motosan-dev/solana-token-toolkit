@@ -1,6 +1,6 @@
 [package]
 name = "solana-token-toolkit"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 rust-version = "1.89"
 license = "MIT OR Apache-2.0"
@@ -13,7 +13,7 @@ categories = ["cryptography::cryptocurrencies"]
 [dependencies]
 # Stable Solana client line. Solana client 4.x is still beta and
 # currently does not align cleanly with all public account types used here.
-solana-client = "3"
+solana-client = { version = "3", optional = true }
 solana-account = "3"
 solana-instruction = "3"
 solana-keypair = "3"
@@ -28,6 +28,13 @@ spl-token = "9"
 spl-token-2022-interface = "2"
 spl-token-interface = "2"
 thiserror = "2"
+
+[features]
+# On by default so existing consumers are unaffected. Disable with
+# `default-features = false` to drop solana-client and get a pure, I/O-free
+# build (planning, mint metadata, and the TokenAccountState/MintAndAta types).
+default = ["rpc"]
+rpc = ["dep:solana-client"]
 
 [dev-dependencies]
 litesvm = "0.11"

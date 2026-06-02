@@ -7,6 +7,7 @@ use solana_pubkey::Pubkey;
 #[non_exhaustive]
 pub enum TokenError {
     /// An RPC call failed.
+    #[cfg(feature = "rpc")]
     #[error("RPC call failed: {0}")]
     Rpc(#[from] solana_client::client_error::ClientError),
 
