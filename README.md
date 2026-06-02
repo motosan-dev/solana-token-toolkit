@@ -6,7 +6,10 @@ Token account workflow primitives for Solana applications.
 [![Docs](https://docs.rs/solana-token-toolkit/badge.svg)](https://docs.rs/solana-token-toolkit)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 
-> **Status:** v0.2. API is stable within minor versions.
+> **Status:** v0.3. API is stable within minor versions. The on-chain state
+> readers (`fetch_token_account_state`, `assemble_token_account_state`) require
+> the default `rpc` feature; planning and mint metadata are I/O-free and build
+> with `default-features = false`.
 
 ## What this is
 
